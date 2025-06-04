@@ -6,11 +6,10 @@ from datetime import datetime
 import base64
 import pandas as pd
 
-# Configuração das chaves e do wkhtmltopdf
+# Configuração das chaves via secrets
 API_KEY_GOOGLE = st.secrets["google"]["api_key"]
 client = OpenAI(api_key=st.secrets["openai"]["api_key"])
-wkhtmltopdf_path = "C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe"
-pdf_config = pdfkit.configuration(wkhtmltopdf=wkhtmltopdf_path)
+pdf_config = None  # ← Removido o caminho local do wkhtmltopdf
 
 # Carrega o logo como base64 para Streamlit e PDF
 def carregar_logo_base64(caminho):
@@ -23,14 +22,13 @@ base64_logo = carregar_logo_base64("logo_radar_local.png")
 st.markdown(f"""
     <div style='text-align: center;'>
         <img src='data:image/png;base64,{base64_logo}' width='120'>
-        <h1 style='font-size: 2.5em;'>Inteligência de Mercado para Autônomos</h1>
+        <h1 style='font-size: 2.5em;'>Radar Local - Inteligência de Mercado para Autônomos</h1>
         <p style='max-width: 700px; margin: auto; font-size: 1.1em; line-height: 1.6;'>
             Descubra seus concorrentes locais, analise as avaliações reais do Google e receba sugestões de diferenciação com inteligência artificial. Ideal para autônomos e pequenos negócios.
         </p>
     </div>
 """, unsafe_allow_html=True)
 
-# Funções principais
 def buscar_concorrentes(profissao, localizacao):
     url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
     params = {"query": f"{profissao} em {localizacao}", "key": API_KEY_GOOGLE}
@@ -79,15 +77,12 @@ Responda:
         max_tokens=800
     )
     texto = resposta.choices[0].message.content
-
-    # Simples extração de informações com split (pode ajustar se quiser algo mais robusto)
     partes = texto.split("\n")
     titulo = partes[0].replace("1. ", "").strip()
     slogan = partes[1].replace("2. ", "").strip()
     nivel = partes[2].replace("3. ", "").strip()
     sugestoes = [p.replace("-", "").strip() for p in partes[3:6] if p.strip()]
     alerta = partes[6].replace("5. ", "").strip() if len(partes) > 6 else ""
-
     return titulo, slogan, nivel, sugestoes, alerta
 
 def gerar_html(profissao, localizacao, concorrentes, resumo, titulo, slogan, nivel_concorrencia, sugestoes, alerta_nicho, base64_logo):
@@ -113,7 +108,6 @@ def gerar_html(profissao, localizacao, concorrentes, resumo, titulo, slogan, niv
         <p><strong>Nível de Concorrência:</strong> <span class='badge'>{nivel_concorrencia}</span></p>
         <hr>
     """
-
     for c in concorrentes:
         html += f"""
         <div class='box'>
@@ -180,9 +174,8 @@ if enviar and profissao and localizacao:
         st.subheader("📊 Análise inteligente dos comentários")
         st.write(resumo)
 
-        # Métricas simuladas
-        nota_media = 4.3
-        faixa_preco = 2
+        nota_media = 4.3  # Simulação
+        faixa_preco = 2   # Simulação
         df_metricas = pd.DataFrame({
             "Bairro": [localizacao],
             "Avaliação Média": [nota_media],
@@ -193,9 +186,8 @@ if enviar and profissao and localizacao:
 
         titulo, slogan, nivel, sugestoes, alerta = enriquecer_com_ia("\n".join(comentarios_total[:10]), nota_media, faixa_preco)
 
-        # Geração do PDF
         html = gerar_html(profissao, localizacao, concorrentes_formatados, resumo, titulo, slogan, nivel, sugestoes, alerta, base64_logo)
-        pdf_bytes = pdfkit.from_string(html, False, configuration=pdf_config)
+        pdf_bytes = pdfkit.from_string(html, False)  # <- sem configuração de caminho
 
         st.download_button(
             label="⬇️ Baixar relatório em PDF",
