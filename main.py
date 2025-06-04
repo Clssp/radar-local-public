@@ -22,7 +22,7 @@ base64_logo = carregar_logo_base64("logo_radar_local.png")
 st.markdown(f"""
     <div style='text-align: center;'>
         <img src='data:image/png;base64,{base64_logo}' width='120'>
-        <h1 style='font-size: 2.5em;'>Radar Local - Inteligência de Mercado para Autônomos</h1>
+        <h1 style='font-size: 2.5em;'>Inteligência de Mercado para Autônomos</h1>
         <p style='max-width: 700px; margin: auto; font-size: 1.1em; line-height: 1.6;'>
             Descubra seus concorrentes locais, analise as avaliações reais do Google e receba sugestões de diferenciação com inteligência artificial. Ideal para autônomos e pequenos negócios.
         </p>
