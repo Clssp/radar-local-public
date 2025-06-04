@@ -7,7 +7,7 @@ import base64
 import pandas as pd
 
 # Configuração das chaves e do wkhtmltopdf
-AAPI_KEY_GOOGLE = st.secrets["google"]["api_key"]
+API_KEY_GOOGLE = st.secrets["google"]["api_key"]
 client = OpenAI(api_key=st.secrets["openai"]["api_key"])
 wkhtmltopdf_path = "C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe"
 pdf_config = pdfkit.configuration(wkhtmltopdf=wkhtmltopdf_path)
