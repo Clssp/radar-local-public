@@ -1,0 +1,7 @@
+streamlit
+requests
+openai
+pdfkit
+matplotlib
+qrcode
+pillow
