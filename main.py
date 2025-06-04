@@ -1,17 +1,17 @@
 import streamlit as st
 import requests
 from openai import OpenAI
-import pdfkit
 from datetime import datetime
 import base64
 import pandas as pd
+from xhtml2pdf import pisa
+from io import BytesIO
 
-# Configuração das chaves via secrets
+# Leitura das chaves via Streamlit Secrets
 API_KEY_GOOGLE = st.secrets["google"]["api_key"]
 client = OpenAI(api_key=st.secrets["openai"]["api_key"])
-pdf_config = None  # ← Removido o caminho local do wkhtmltopdf
 
-# Carrega o logo como base64 para Streamlit e PDF
+# Carrega o logo como base64
 def carregar_logo_base64(caminho):
     with open(caminho, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
@@ -29,6 +29,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
+# Buscar concorrentes
 def buscar_concorrentes(profissao, localizacao):
     url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
     params = {"query": f"{profissao} em {localizacao}", "key": API_KEY_GOOGLE}
@@ -42,6 +43,7 @@ def buscar_comentarios(place_id):
     reviews = response.json().get("result", {}).get("reviews", [])
     return [r.get("text", "") for r in reviews if r.get("text")]
 
+# OpenAI - Análise de comentários
 def gerar_resumo_openai(comentarios):
     prompt = f"""
 Você é um consultor de marketing para autônomos. Analise os comentários abaixo:
@@ -58,6 +60,7 @@ Você é um consultor de marketing para autônomos. Analise os comentários abai
     )
     return resposta.choices[0].message.content
 
+# Análise estratégica
 def enriquecer_com_ia(comentarios, nota_media, faixa_preco):
     prompt = f"""
 Você é um consultor de marketing.
@@ -85,62 +88,43 @@ Responda:
     alerta = partes[6].replace("5. ", "").strip() if len(partes) > 6 else ""
     return titulo, slogan, nivel, sugestoes, alerta
 
-def gerar_html(profissao, localizacao, concorrentes, resumo, titulo, slogan, nivel_concorrencia, sugestoes, alerta_nicho, base64_logo):
+# Função para gerar PDF com xhtml2pdf
+def gerar_pdf(html):
+    result = BytesIO()
+    pisa.CreatePDF(html, dest=result)
+    return result.getvalue()
+
+# Geração do HTML
+def gerar_html(profissao, localizacao, concorrentes, resumo, titulo, slogan, nivel_concorrencia, sugestoes, alerta_nicho):
     logo_html = f"<img src='data:image/png;base64,{base64_logo}' width='120' style='display:block; margin:auto;'>"
     html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset='utf-8'>
-        <style>
-            body {{ font-family: Arial; padding: 20px; }}
-            h1 {{ color: #004080; text-align: center; }}
-            .box {{ border: 1px solid #ddd; margin-bottom: 10px; padding: 10px; }}
-            .badge {{ background-color: #eee; padding: 5px 10px; border-radius: 5px; font-size: 0.9em; }}
-        </style>
-    </head>
-    <body>
-        {logo_html}
-        <h1>{titulo}</h1>
-        <p style='text-align:center; font-style: italic;'>{slogan}</p>
-        <p><strong>Profissão:</strong> {profissao}</p>
-        <p><strong>Localização:</strong> {localizacao}</p>
-        <p><strong>Nível de Concorrência:</strong> <span class='badge'>{nivel_concorrencia}</span></p>
-        <hr>
+    <html><head><meta charset='utf-8'></head><body>
+    {logo_html}
+    <h1 style='text-align:center;'>{titulo}</h1>
+    <p style='text-align:center; font-style: italic;'>{slogan}</p>
+    <p><strong>Profissão:</strong> {profissao}</p>
+    <p><strong>Localização:</strong> {localizacao}</p>
+    <p><strong>Nível de Concorrência:</strong> {nivel_concorrencia}</p>
+    <hr>
     """
     for c in concorrentes:
-        html += f"""
-        <div class='box'>
-            <h3>Concorrente: {c['nome']}</h3>
-            <p><strong>Nota:</strong> {c['nota']}</p>
-            <p><strong>Endereço:</strong> {c['endereco']}</p>
-            <p><strong>Comentários:</strong></p>
-            <ul>
-        """
+        html += f"<h3>{c['nome']} — {c['nota']}</h3><p>{c['endereco']}</p><ul>"
         for com in c['comentarios']:
             html += f"<li>{com}</li>"
-        html += "</ul></div>"
+        html += "</ul>"
 
-    html += f"""
-        <h2>Análise Inteligente</h2>
-        <p>{resumo}</p>
-        <h3>🎯 Sugestões Estratégicas</h3>
-        <ul>
-    """
-    for sugestao in sugestoes:
-        html += f"<li>{sugestao}</li>"
+    html += f"<h2>Análise Inteligente</h2><p>{resumo}</p><h3>Sugestões:</h3><ul>"
+    for s in sugestoes:
+        html += f"<li>{s}</li>"
     html += "</ul>"
 
     if alerta_nicho:
-        html += f"<div style='margin-top:20px; padding:10px; border-left: 5px solid green; background-color: #f0fff0;'><strong>🚀 Nicho Promissor:</strong> {alerta_nicho}</div>"
+        html += f"<p><strong>🚀 Nicho Promissor:</strong> {alerta_nicho}</p>"
 
-    html += """
-    </body>
-    </html>
-    """
+    html += "</body></html>"
     return html
 
-# Interface principal
+# Formulário principal
 with st.form("formulario"):
     profissao = st.text_input("Qual é a sua profissão?", placeholder="Ex: Barbearia")
     localizacao = st.text_input("Qual é sua cidade ou bairro?", placeholder="Ex: Vila Prudente")
@@ -167,27 +151,28 @@ if enviar and profissao and localizacao:
                 "endereco": endereco,
                 "comentarios": comentarios[:2]
             })
-
             comentarios_total.extend(comentarios)
 
         resumo = gerar_resumo_openai("\n".join(comentarios_total[:10]))
-        st.subheader("📊 Análise inteligente dos comentários")
-        st.write(resumo)
 
-        nota_media = 4.3  # Simulação
-        faixa_preco = 2   # Simulação
+        nota_media = 4.3
+        faixa_preco = 2
         df_metricas = pd.DataFrame({
             "Bairro": [localizacao],
             "Avaliação Média": [nota_media],
             "Faixa de Preço Média": [faixa_preco]
         })
+
+        st.subheader("📊 Análise inteligente dos comentários")
+        st.write(resumo)
+
         st.subheader("📋 Tabela de Avaliação e Faixa de Preço")
         st.dataframe(df_metricas)
 
         titulo, slogan, nivel, sugestoes, alerta = enriquecer_com_ia("\n".join(comentarios_total[:10]), nota_media, faixa_preco)
 
-        html = gerar_html(profissao, localizacao, concorrentes_formatados, resumo, titulo, slogan, nivel, sugestoes, alerta, base64_logo)
-        pdf_bytes = pdfkit.from_string(html, False)  # <- sem configuração de caminho
+        html = gerar_html(profissao, localizacao, concorrentes_formatados, resumo, titulo, slogan, nivel, sugestoes, alerta)
+        pdf_bytes = gerar_pdf(html)
 
         st.download_button(
             label="⬇️ Baixar relatório em PDF",

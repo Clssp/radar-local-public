@@ -1,0 +1,24 @@
+# Evitar que as credenciais fiquem públicas
+.streamlit/secrets.toml
+
+# Arquivos e pastas temporárias
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# PDFs gerados dinamicamente
+*.pdf
+
+# Pastas de ambiente virtual (ajuste se o nome for diferente)
+venv/
+.env/
+.envrc
+
+# IDEs
+.vscode/
+.idea/
+
+# wkhtmltopdf instalado localmente (caso copie para o projeto)
+wkhtmltopdf.exe
