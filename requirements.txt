@@ -1,4 +1,3 @@
-# requirements.txt
 streamlit
 openai
 requests
@@ -6,6 +5,5 @@ pandas
 xhtml2pdf
 matplotlib
 qrcode
-# requirements.txt
-# ... (outras bibliotecas)
-psycopg2-binary 
+psycopg2-binary
+numpy

@@ -1,5 +1,5 @@
 # ==============================================================================
-# main.py - Radar Local v2.6 (Com Correção de Erro no Gráfico Radar)
+# main.py - Radar Local v2.7 (Produção com xhtml2pdf e Supabase)
 # ==============================================================================
 
 import streamlit as st
@@ -29,12 +29,28 @@ except (KeyError, FileNotFoundError):
     st.error("As chaves de API (Google, OpenAI) não foram encontradas. Configure seu arquivo `secrets.toml`.")
     st.stop()
 
-# --- FUNÇÕES DE UTILIDADE E SALVAMENTO ---
-def limpar_texto_pdf(texto):
-    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
-    texto = "".join(c for c in texto if unicodedata.category(c) != "So")
-    texto = re.sub(r'[^\w\s.,!?-]', '', texto)
-    return texto
+# --- FUNÇÕES DE BANCO DE DADOS E UTILIDADE ---
+@st.cache_resource
+def init_connection():
+    """Inicializa e retorna a conexão com o banco de dados."""
+    try:
+        return psycopg2.connect(**st.secrets["database"])
+    except psycopg2.OperationalError as e:
+        st.error(f"Erro ao conectar ao banco de dados: {e}. Verifique suas credenciais no secrets.toml.")
+        st.stop()
+
+conn = init_connection()
+
+def salvar_historico(nome, profissao, localizacao, titulo, slogan, nivel_concorrencia, alerta):
+    """Salva os dados da consulta no banco de dados PostgreSQL."""
+    sql = """INSERT INTO consultas (nome_usuario, tipo_negocio_pesquisado, localizacao_pesquisada, nivel_concorrencia_ia, titulo_gerado_ia, slogan_gerado_ia, alerta_oportunidade_ia) VALUES (%s, %s, %s, %s, %s, %s, %s);"""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (nome, profissao, localizacao, nivel_concorrencia, titulo, slogan, alerta))
+            conn.commit()
+    except psycopg2.Error as e:
+        st.error(f"Erro ao salvar no banco de dados: {e}")
+        conn.rollback()
 
 def carregar_logo_base64(caminho):
     try:
@@ -44,29 +60,11 @@ def carregar_logo_base64(caminho):
         st.warning(f"Arquivo de logo não encontrado em: {caminho}")
         return ""
 
-# SUBSTITUA A FUNÇÃO ANTIGA POR ESTA
-
-@st.cache_resource
-def init_connection():
-    """Inicializa a conexão com o banco de dados."""
-    return psycopg2.connect(**st.secrets["database"])
-
-conn = init_connection()
-
-def salvar_historico(nome, profissao, localizacao, titulo, slogan, nivel_concorrencia, alerta):
-    """Salva os dados da consulta no banco de dados PostgreSQL."""
-    sql = """
-    INSERT INTO consultas (nome_usuario, tipo_negocio_pesquisado, localizacao_pesquisada, nivel_concorrencia_ia, titulo_gerado_ia, slogan_gerado_ia, alerta_oportunidade_ia)
-    VALUES (%s, %s, %s, %s, %s, %s, %s);
-    """
-    try:
-        # Usar um novo cursor para cada operação garante a thread-safety
-        with conn.cursor() as cur:
-            cur.execute(sql, (nome, profissao, localizacao, nivel_concorrencia, titulo, slogan, alerta))
-            conn.commit()
-    except psycopg2.Error as e:
-        st.error(f"Erro ao salvar no banco de dados: {e}")
-        conn.rollback() # Desfaz a transação em caso de erro
+def limpar_texto_pdf(texto):
+    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    texto = "".join(c for c in texto if unicodedata.category(c) != "So")
+    texto = re.sub(r'[^\w\s.,!?-]', '', texto)
+    return texto
 
 # --- FUNÇÕES DE API (GOOGLE E OPENAI) ---
 def buscar_concorrentes(profissao, localizacao):
@@ -122,11 +120,7 @@ def gerar_pdf(html):
     return pdf_bytes.getvalue()
 
 def gerar_grafico_radar_base64(sentimentos_dict):
-    """CORRIGIDO: Gera um Gráfico de Radar para a análise de sentimentos, tratando os dados de forma segura."""
     labels = list(sentimentos_dict.keys())
-    
-    # --- INÍCIO DA CORREÇÃO ---
-    # Bloco de código para limpar e garantir que os valores sejam números
     stats_limpos = []
     for valor in sentimentos_dict.values():
         if isinstance(valor, (int, float)):
@@ -136,25 +130,12 @@ def gerar_grafico_radar_base64(sentimentos_dict):
             stats_limpos.append(nota_extraida if isinstance(nota_extraida, (int, float)) else 5)
         else:
             stats_limpos.append(5)
-    
     stats = stats_limpos
-    # --- FIM DA CORREÇÃO ---
-
-    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
-    stats += stats[:1]
-    angles += angles[:1]
-
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist(); stats += stats[:1]; angles += angles[:1]
     fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
-    ax.fill(angles, stats, color='#007bff', alpha=0.25)
-    ax.plot(angles, stats, color='#007bff', linewidth=2)
-    ax.set_ylim(0, 10) # Garante que a escala do gráfico seja sempre de 0 a 10
-    ax.set_yticklabels([])
-    ax.set_thetagrids(np.degrees(angles[:-1]), labels, fontsize=12)
-    ax.set_title("Diagnóstico de Sentimentos por Tópico", fontsize=16, y=1.1)
-
-    buf = BytesIO()
-    plt.savefig(buf, format="png", bbox_inches='tight')
-    plt.close(fig)
+    ax.fill(angles, stats, color='#007bff', alpha=0.25); ax.plot(angles, stats, color='#007bff', linewidth=2)
+    ax.set_ylim(0, 10); ax.set_yticklabels([]); ax.set_thetagrids(np.degrees(angles[:-1]), labels, fontsize=12); ax.set_title("Diagnóstico de Sentimentos por Tópico", fontsize=16, y=1.1)
+    buf = BytesIO(); plt.savefig(buf, format="png", bbox_inches='tight'); plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def gerar_grafico_concorrentes_base64(concorrentes):
@@ -257,3 +238,32 @@ if enviar:
 
             if pdf_bytes:
                 st.download_button("⬇️ Baixar Relatório Premium em PDF", pdf_bytes, f"relatorio_premium_{profissao.replace(' ','_')}_{datetime.now().strftime('%Y%m%d')}.pdf", "application/pdf")
+
+# --- PAINEL DE ADMINISTRADOR ---
+st.markdown("---")
+def check_password():
+    with st.sidebar.form("password_form"):
+        st.markdown("### Acesso Restrito")
+        password = st.text_input("Senha de Administrador", type="password")
+        submitted = st.form_submit_button("Acessar")
+        if submitted:
+            if password == st.secrets["admin"]["password"]:
+                st.session_state["password_correct"] = True; st.rerun()
+            else:
+                st.error("Senha incorreta.")
+    return False
+
+if st.session_state.get("password_correct", False):
+    st.sidebar.success("Acesso de administrador concedido!")
+    st.subheader("📊 Painel de Administrador")
+    path_historico = Path("historico_consultas.csv")
+    if path_historico.exists():
+        with st.expander("Ver Histórico de Consultas", expanded=True):
+            df_historico = pd.read_csv(path_historico); st.dataframe(df_historico)
+            st.markdown("#### Análise Rápida"); col1, col2 = st.columns(2)
+            with col1: st.write("**Negócios Mais Pesquisados:**"); st.bar_chart(df_historico['tipo_negocio_pesquisado'].value_counts())
+            with col2: st.write("**Localizações Mais Pesquisadas:**"); st.bar_chart(df_historico['localizacao_pesquisada'].value_counts())
+    else:
+        st.info("O histórico de consultas ainda não foi criado.")
+else:
+    check_password()
