@@ -1,186 +1,259 @@
+# ==============================================================================
+# main.py - Radar Local v2.6 (Com Correção de Erro no Gráfico Radar)
+# ==============================================================================
+
 import streamlit as st
 import requests
 from openai import OpenAI
 from datetime import datetime
 import base64
 import pandas as pd
-from xhtml2pdf import pisa
 from io import BytesIO
+import unicodedata
+import re
+import json
+from xhtml2pdf import pisa
+import matplotlib.pyplot as plt
+import numpy as np
+import qrcode
+from pathlib import Path
+import psycopg2
 
-# Leitura das chaves via Streamlit Secrets
-API_KEY_GOOGLE = st.secrets["google"]["api_key"]
-client = OpenAI(api_key=st.secrets["openai"]["api_key"])
+# --- CONFIGURAÇÕES E INICIALIZAÇÃO ---
+st.set_page_config(page_title="Radar Local", page_icon="📡", layout="wide")
 
-# Carrega o logo como base64
+try:
+    API_KEY_GOOGLE = st.secrets["google"]["api_key"]
+    client = OpenAI(api_key=st.secrets["openai"]["api_key"])
+except (KeyError, FileNotFoundError):
+    st.error("As chaves de API (Google, OpenAI) não foram encontradas. Configure seu arquivo `secrets.toml`.")
+    st.stop()
+
+# --- FUNÇÕES DE UTILIDADE E SALVAMENTO ---
+def limpar_texto_pdf(texto):
+    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    texto = "".join(c for c in texto if unicodedata.category(c) != "So")
+    texto = re.sub(r'[^\w\s.,!?-]', '', texto)
+    return texto
+
 def carregar_logo_base64(caminho):
-    with open(caminho, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+    try:
+        with open(caminho, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    except FileNotFoundError:
+        st.warning(f"Arquivo de logo não encontrado em: {caminho}")
+        return ""
 
-base64_logo = carregar_logo_base64("logo_radar_local.png")
+# SUBSTITUA A FUNÇÃO ANTIGA POR ESTA
 
-# Interface inicial
-st.markdown(f"""
-    <div style='text-align: center;'>
-        <img src='data:image/png;base64,{base64_logo}' width='120'>
-        <h1 style='font-size: 2.5em;'>Radar Local - Inteligência de Mercado para Autônomos</h1>
-        <p style='max-width: 700px; margin: auto; font-size: 1.1em; line-height: 1.6;'>
-            Descubra seus concorrentes locais, analise as avaliações reais do Google e receba sugestões de diferenciação com inteligência artificial. Ideal para autônomos e pequenos negócios.
-        </p>
-    </div>
-""", unsafe_allow_html=True)
+@st.cache_resource
+def init_connection():
+    """Inicializa a conexão com o banco de dados."""
+    return psycopg2.connect(**st.secrets["database"])
 
-# Buscar concorrentes
+conn = init_connection()
+
+def salvar_historico(nome, profissao, localizacao, titulo, slogan, nivel_concorrencia, alerta):
+    """Salva os dados da consulta no banco de dados PostgreSQL."""
+    sql = """
+    INSERT INTO consultas (nome_usuario, tipo_negocio_pesquisado, localizacao_pesquisada, nivel_concorrencia_ia, titulo_gerado_ia, slogan_gerado_ia, alerta_oportunidade_ia)
+    VALUES (%s, %s, %s, %s, %s, %s, %s);
+    """
+    try:
+        # Usar um novo cursor para cada operação garante a thread-safety
+        with conn.cursor() as cur:
+            cur.execute(sql, (nome, profissao, localizacao, nivel_concorrencia, titulo, slogan, alerta))
+            conn.commit()
+    except psycopg2.Error as e:
+        st.error(f"Erro ao salvar no banco de dados: {e}")
+        conn.rollback() # Desfaz a transação em caso de erro
+
+# --- FUNÇÕES DE API (GOOGLE E OPENAI) ---
 def buscar_concorrentes(profissao, localizacao):
     url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
     params = {"query": f"{profissao} em {localizacao}", "key": API_KEY_GOOGLE}
     response = requests.get(url, params=params)
-    return response.json().get("results", []) if response.status_code == 200 else []
+    if response.status_code == 200:
+        return response.json().get("results", [])
+    return []
 
-def buscar_comentarios(place_id):
+def buscar_detalhes_lugar(place_id):
     url = "https://maps.googleapis.com/maps/api/place/details/json"
-    params = {"place_id": place_id, "fields": "review", "key": API_KEY_GOOGLE}
+    params = {"place_id": place_id, "fields": "name,formatted_address,review,formatted_phone_number,website,opening_hours", "key": API_KEY_GOOGLE}
     response = requests.get(url, params=params)
-    reviews = response.json().get("result", {}).get("reviews", [])
-    return [r.get("text", "") for r in reviews if r.get("text")]
+    if response.status_code == 200:
+        return response.json().get("result", {})
+    return {}
 
-# OpenAI - Análise de comentários
-def gerar_resumo_openai(comentarios):
-    prompt = f"""
-Você é um consultor de marketing para autônomos. Analise os comentários abaixo:
-{comentarios}
-1. Quais elogios são mais frequentes?
-2. Quais reclamações são mais comuns?
-3. Dê 3 sugestões práticas para um novo profissional se destacar.
-"""
-    resposta = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-        max_tokens=600
-    )
-    return resposta.choices[0].message.content
+def analisar_sentimentos_por_topico_ia(comentarios):
+    prompt = f"""Analise os seguintes comentários de clientes. Para cada um dos tópicos abaixo, atribua uma nota de sentimento de 0 (muito negativo) a 10 (muito positivo), com base na opinião geral. Se um tópico não for mencionado, atribua a nota 5 (neutro). Tópicos: Atendimento, Preço, Qualidade, Ambiente, Tempo de Espera. Responda estritamente no formato JSON: {{"Atendimento": 8, "Preço": 6, "Qualidade": 9, "Ambiente": 7, "Tempo de Espera": 4}}"""
+    try:
+        resposta = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.2)
+        dados = json.loads(resposta.choices[0].message.content)
+        topicos_base = {"Atendimento": 5, "Preço": 5, "Qualidade": 5, "Ambiente": 5, "Tempo de Espera": 5}; topicos_base.update(dados)
+        return topicos_base
+    except (json.JSONDecodeError, KeyError, IndexError):
+        return {"Atendimento": 0, "Preço": 0, "Qualidade": 0, "Ambiente": 0, "Tempo de Espera": 0}
 
-# Análise estratégica
-def enriquecer_com_ia(comentarios, nota_media, faixa_preco):
-    prompt = f"""
-Você é um consultor de marketing.
-Baseando-se na média de avaliação {nota_media}, faixa de preço {faixa_preco}, e nestes comentários:
-{comentarios}
-Responda:
-1. Um título impactante para o relatório.
-2. Um slogan com tom inspirador para pequenos negócios.
-3. Classifique o nível de concorrência como: Baixo, Médio ou Alto.
-4. Liste 3 sugestões estratégicas para se diferenciar.
-5. Há um nicho promissor com nota baixa e concorrência fraca? Se sim, escreva um alerta.
-"""
-    resposta = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-        max_tokens=800
-    )
-    texto = resposta.choices[0].message.content
-    partes = texto.split("\n")
-    titulo = partes[0].replace("1. ", "").strip()
-    slogan = partes[1].replace("2. ", "").strip()
-    nivel = partes[2].replace("3. ", "").strip()
-    sugestoes = [p.replace("-", "").strip() for p in partes[3:6] if p.strip()]
-    alerta = partes[6].replace("5. ", "").strip() if len(partes) > 6 else ""
-    return titulo, slogan, nivel, sugestoes, alerta
+def gerar_dossie_concorrente_ia(nome_concorrente, comentarios, horarios):
+    prompt = f"""Você é um estrategista de negócios sênior. Baseado nos dados do concorrente '{nome_concorrente}', que possui os seguintes horários de funcionamento: {horarios} e os seguintes comentários de clientes: "{' '.join(comentarios)}", crie um dossiê estratégico. Responda estritamente no seguinte formato JSON: {{"arquétipo": "Um arquétipo curto e impactante (Ex: 'O Padrão Confiável', 'O Barato com Surpresas').", "ponto_forte": "A principal força do concorrente, em uma frase.", "fraqueza_exploravel": "A principal fraqueza que pode ser explorada por um novo negócio, em uma frase.", "resumo_estrategico": "Um parágrafo conciso resumindo a posição estratégica deste concorrente no mercado."}}"""
+    try:
+        resposta = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.7)
+        return json.loads(resposta.choices[0].message.content)
+    except (json.JSONDecodeError, KeyError, IndexError):
+        return {"arquétipo": "Não foi possível analisar", "ponto_forte": "N/A", "fraqueza_exploravel": "N/A", "resumo_estrategico": "Não foi possível gerar o resumo estratégico."}
 
-# Função para gerar PDF com xhtml2pdf
+def enriquecer_com_ia(sentimentos_dict):
+    prompt = f"""Baseado no seguinte diagnóstico de sentimentos (0-10) de um mercado local: {sentimentos_dict}, gere os seguintes insights: Responda estritamente no formato JSON: {{"titulo": "Um título criativo para o relatório.", "slogan": "Um slogan inspirador.", "nivel_concorrencia": "Baixo, Médio ou Alto", "sugestoes_estrategicas": ["Sugestão estratégica 1 baseada no ponto mais fraco.", "Sugestão 2 baseada no ponto mais forte."], "alerta_nicho": "Se houver um tópico com nota muito baixa (menor que 4), escreva um alerta sobre essa oportunidade. Senão, string vazia."}}"""
+    try:
+        resposta = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.7)
+        dados_ia = json.loads(resposta.choices[0].message.content)
+        return (dados_ia.get("titulo", "Análise Estratégica"), dados_ia.get("slogan", "Destaque-se."), dados_ia.get("nivel_concorrencia", "N/D"), dados_ia.get("sugestoes_estrategicas", []), dados_ia.get("alerta_nicho", ""))
+    except (json.JSONDecodeError, KeyError, IndexError):
+        return "Análise Indisponível", "Slogan Indisponível", "Nível Indisponível", [], ""
+
+# --- FUNÇÕES DE GERAÇÃO DE ARQUIVOS ---
 def gerar_pdf(html):
-    result = BytesIO()
-    pisa.CreatePDF(html, dest=result)
-    return result.getvalue()
+    pdf_bytes = BytesIO()
+    pisa_status = pisa.CreatePDF(html.encode('utf-8'), dest=pdf_bytes, encoding='utf-8')
+    if pisa_status.err:
+        html_limpo = limpar_texto_pdf(html); pdf_bytes = BytesIO()
+        pisa.CreatePDF(html_limpo.encode('utf-8'), dest=pdf_bytes, encoding='utf-8')
+    return pdf_bytes.getvalue()
 
-# Geração do HTML
-def gerar_html(profissao, localizacao, concorrentes, resumo, titulo, slogan, nivel_concorrencia, sugestoes, alerta_nicho):
-    logo_html = f"<img src='data:image/png;base64,{base64_logo}' width='120' style='display:block; margin:auto;'>"
-    html = f"""
-    <html><head><meta charset='utf-8'></head><body>
-    {logo_html}
-    <h1 style='text-align:center;'>{titulo}</h1>
-    <p style='text-align:center; font-style: italic;'>{slogan}</p>
-    <p><strong>Profissão:</strong> {profissao}</p>
-    <p><strong>Localização:</strong> {localizacao}</p>
-    <p><strong>Nível de Concorrência:</strong> {nivel_concorrencia}</p>
-    <hr>
-    """
-    for c in concorrentes:
-        html += f"<h3>{c['nome']} — {c['nota']}</h3><p>{c['endereco']}</p><ul>"
-        for com in c['comentarios']:
-            html += f"<li>{com}</li>"
-        html += "</ul>"
+def gerar_grafico_radar_base64(sentimentos_dict):
+    """CORRIGIDO: Gera um Gráfico de Radar para a análise de sentimentos, tratando os dados de forma segura."""
+    labels = list(sentimentos_dict.keys())
+    
+    # --- INÍCIO DA CORREÇÃO ---
+    # Bloco de código para limpar e garantir que os valores sejam números
+    stats_limpos = []
+    for valor in sentimentos_dict.values():
+        if isinstance(valor, (int, float)):
+            stats_limpos.append(valor)
+        elif isinstance(valor, dict):
+            nota_extraida = valor.get('nota', valor.get('score', 5))
+            stats_limpos.append(nota_extraida if isinstance(nota_extraida, (int, float)) else 5)
+        else:
+            stats_limpos.append(5)
+    
+    stats = stats_limpos
+    # --- FIM DA CORREÇÃO ---
 
-    html += f"<h2>Análise Inteligente</h2><p>{resumo}</p><h3>Sugestões:</h3><ul>"
-    for s in sugestoes:
-        html += f"<li>{s}</li>"
-    html += "</ul>"
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+    stats += stats[:1]
+    angles += angles[:1]
 
-    if alerta_nicho:
-        html += f"<p><strong>🚀 Nicho Promissor:</strong> {alerta_nicho}</p>"
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+    ax.fill(angles, stats, color='#007bff', alpha=0.25)
+    ax.plot(angles, stats, color='#007bff', linewidth=2)
+    ax.set_ylim(0, 10) # Garante que a escala do gráfico seja sempre de 0 a 10
+    ax.set_yticklabels([])
+    ax.set_thetagrids(np.degrees(angles[:-1]), labels, fontsize=12)
+    ax.set_title("Diagnóstico de Sentimentos por Tópico", fontsize=16, y=1.1)
 
-    html += "</body></html>"
-    return html
+    buf = BytesIO()
+    plt.savefig(buf, format="png", bbox_inches='tight')
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-# Formulário principal
-with st.form("formulario"):
-    profissao = st.text_input("Qual é a sua profissão?", placeholder="Ex: Barbearia")
-    localizacao = st.text_input("Qual é sua cidade ou bairro?", placeholder="Ex: Vila Prudente")
-    enviar = st.form_submit_button("🔍 Buscar concorrência")
+def gerar_grafico_concorrentes_base64(concorrentes):
+    if not concorrentes: return ""
+    notas=[float(c.get('nota',0)) for c in concorrentes]; avaliacoes=[int(c.get('total_avaliacoes',0)) for c in concorrentes]; nomes=[c.get('nome','') for c in concorrentes]
+    if not any(notas) and not any(avaliacoes): return ""
+    fig, ax = plt.subplots(figsize=(8, 6)); ax.scatter(notas, avaliacoes, s=100, alpha=0.7, edgecolors="k", c="#4CAF50")
+    for i, nome in enumerate(nomes): ax.text(notas[i], avaliacoes[i] + (max(avaliacoes) * 0.02), nome[:15], fontsize=9, ha='center')
+    media_nota=sum(notas)/len(notas) if notas else 0; media_avaliacoes=sum(avaliacoes)/len(avaliacoes) if avaliacoes else 0
+    ax.axvline(media_nota, color='grey', linestyle='--', linewidth=1); ax.axhline(media_avaliacoes, color='grey', linestyle='--', linewidth=1)
+    ax.set_title('Análise de Concorrentes: Qualidade vs. Popularidade', fontsize=14); ax.set_xlabel('Nota Média (Qualidade)', fontsize=12); ax.set_ylabel('Número de Avaliações (Popularidade)', fontsize=12)
+    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+    if notas: ax.set_xlim(min(notas)-0.5, max(notas)+0.5)
+    if avaliacoes: ax.set_ylim(0, max(avaliacoes)*1.1)
+    buf = BytesIO(); plt.savefig(buf, format="png", bbox_inches='tight'); plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-if enviar and profissao and localizacao:
-    st.success(f"Buscando concorrentes de **{profissao}** em **{localizacao}**...")
-    resultados = buscar_concorrentes(profissao, localizacao)
+def gerar_html_relatorio(**kwargs):
+    css = """<style> body { font-family: Arial, sans-serif; } .center { text-align: center; } .report-header { padding-bottom: 20px; border-bottom: 2px solid #eee; } .section { margin-top: 35px; page-break-inside: avoid; } h3 { border-bottom: 1px solid #eee; padding-bottom: 5px;} .slogan { font-style: italic; } .alert { border: 1px solid #f44336; background-color: #ffe6e6; padding: 15px; margin-top: 20px; } table { border-collapse: collapse; width: 100%; font-size: 12px; } th, td { border: 1px solid #ccc; padding: 8px; } th { background-color: #f2f2f2; } .dossier-card { border: 1px solid #ddd; padding: 15px; margin-top: 20px; page-break-inside: avoid; border-radius: 8px; background-color: #f9f9f9; } .review { border-left: 3px solid #ccc; padding-left: 10px; margin-top: 10px; font-style: italic; } </style>"""
+    dossie_html = ""
+    for c in kwargs.get("concorrentes", []):
+        dossie_ia = c.get('dossie_ia', {})
+        horarios_html = "<ul>" + "".join(f"<li>{h}</li>" for h in c.get('horarios', ['Não informado'])) + "</ul>"
+        review_pos = f"<div class='review'><strong>👍 Positiva:</strong> {c.get('review_positivo_exemplo', 'Nenhuma avaliação positiva encontrada.')}</div>"
+        review_neg = f"<div class='review'><strong>👎 Negativa:</strong> {c.get('review_negativo_exemplo', 'Nenhuma avaliação negativa encontrada.')}</div>"
+        dossie_html += f"""<div class='dossier-card'><h4>{c.get('nome', 'Concorrente')}</h4><p><strong>Endereço:</strong> {c.get('endereco', 'Não informado')}</p><p><strong>Arquétipo Estratégico:</strong> {dossie_ia.get('arquétipo', 'N/A')}</p><p>{dossie_ia.get('resumo_estrategico', '')}</p><strong>Horário de Funcionamento:</strong>{horarios_html}<strong>Amostra de Avaliações de Clientes:</strong>{review_pos}{review_neg}</div>"""
+        
+    body = f"""<html><head><meta charset='utf-8'>{css}</head><body>
+        <div class='report-header center'><img src='data:image/png;base64,{kwargs.get("base64_logo")}' width='120'><h1>{kwargs.get("titulo")}</h1><p class='slogan'>"{kwargs.get("slogan")}"</p><p>Análise de Concorrência para <strong>{kwargs.get("tipo_negocio")}</strong></p><p><small>Gerado para: {kwargs.get("nome_usuario")} em {kwargs.get("data_hoje")}</small></p></div>
+        <div class='section center'><h3>Diagnóstico Geral do Mercado</h3><img src='data:image/png;base64,{kwargs.get("grafico_radar_b64")}' width='500'></div>
+        <div class='section'><h3>Sugestões Estratégicas</h3><ul>{''.join(f"<li>{s}</li>" for s in kwargs.get("sugestoes_estrategicas", []))}</ul></div>
+        {f"<div class='section alert'><h3>🚨 Alerta de Oportunidade</h3><p>{kwargs.get('alerta_nicho')}</p></div>" if kwargs.get('alerta_nicho') else ""}
+        <div class='section center'><h3>Posicionamento dos Concorrentes</h3><img src='data:image/png;base64,{kwargs.get("grafico_concorrentes_b64")}' width='600'></div>
+        <div class='section'><h3>Visão Geral dos Concorrentes</h3><table><tr><th>Nome</th><th>Nota</th><th>Total Aval.</th><th>Preço</th><th>Site</th></tr>{''.join(f"<tr><td>{c.get('nome')}</td><td>{c.get('nota')}</td><td>{c.get('total_avaliacoes')}</td><td>{c.get('price_level', '-')}</td><td><a href='{c.get('site', '#')}'>Visitar</a></td></tr>" for c in kwargs.get("concorrentes", []))}</table></div>
+        <div class='section' style='page-break-before: always;'><h3>Apêndice: Dossiê Detalhado dos Concorrentes</h3>{dossie_html}</div>
+        </body></html>"""
+    return body
 
-    if resultados:
-        comentarios_total = []
-        concorrentes_formatados = []
+# --- INTERFACE PRINCIPAL DO STREAMLIT ---
+base64_logo = carregar_logo_base64("logo_radar_local.png")
+st.markdown(f"""<div style='text-align: center;'><img src='data:image/png;base64,{base64_logo}' width='120'><h1 style='font-size: 2.5em;'>Radar Local</h1><p style='font-size: 1.2em; color: #555;'>Inteligência de Mercado para Autônomos e Pequenos Negócios</p></div>""", unsafe_allow_html=True)
+st.markdown("---")
 
-        for lugar in resultados[:3]:
-            nome = lugar["name"]
-            nota = lugar.get("rating", "Sem avaliação")
-            endereco = lugar.get("formatted_address", "Endereço não disponível")
-            place_id = lugar.get("place_id")
-            comentarios = buscar_comentarios(place_id)
+with st.form("formulario_principal"):
+    st.subheader("🕵️‍♀️ Comece sua Análise Premium")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        profissao = st.text_input("Sua profissão ou tipo de negócio?", placeholder="Ex: Barbearia")
+    with col2:
+        localizacao = st.text_input("Sua cidade ou bairro?", placeholder="Ex: Vila Prudente, SP")
+    with col3:
+        nome_usuario = st.text_input("Seu nome (para o relatório)", placeholder="Ex: João Silva")
+    enviar = st.form_submit_button("🔍 Gerar Análise Completa")
 
-            concorrentes_formatados.append({
-                "nome": nome,
-                "nota": nota,
-                "endereco": endereco,
-                "comentarios": comentarios[:2]
-            })
-            comentarios_total.extend(comentarios)
-
-        resumo = gerar_resumo_openai("\n".join(comentarios_total[:10]))
-
-        nota_media = 4.3
-        faixa_preco = 2
-        df_metricas = pd.DataFrame({
-            "Bairro": [localizacao],
-            "Avaliação Média": [nota_media],
-            "Faixa de Preço Média": [faixa_preco]
-        })
-
-        st.subheader("📊 Análise inteligente dos comentários")
-        st.write(resumo)
-
-        st.subheader("📋 Tabela de Avaliação e Faixa de Preço")
-        st.dataframe(df_metricas)
-
-        titulo, slogan, nivel, sugestoes, alerta = enriquecer_com_ia("\n".join(comentarios_total[:10]), nota_media, faixa_preco)
-
-        html = gerar_html(profissao, localizacao, concorrentes_formatados, resumo, titulo, slogan, nivel, sugestoes, alerta)
-        pdf_bytes = gerar_pdf(html)
-
-        st.download_button(
-            label="⬇️ Baixar relatório em PDF",
-            data=pdf_bytes,
-            file_name=f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-            mime="application/pdf"
-        )
+if enviar:
+    if not all([profissao, localizacao, nome_usuario]):
+        st.warning("⚠️ Por favor, preencha todos os campos.")
     else:
-        st.info("Nenhum concorrente encontrado.")
-elif enviar:
-    st.warning("Preencha todos os campos.")
+        with st.spinner("Analisando concorrentes e gerando dossiês estratégicos... Isso pode levar um minuto."):
+            resultados_google = buscar_concorrentes(profissao, localizacao)
+            if not resultados_google: st.info("Nenhum concorrente encontrado. Tente termos diferentes."); st.stop()
+            
+            concorrentes_formatados = []
+            comentarios_total = []
+            for lugar in resultados_google[:5]:
+                if not lugar.get("place_id"): continue
+                detalhes = buscar_detalhes_lugar(lugar.get("place_id"))
+                reviews = detalhes.get("reviews", [])
+                comentarios_individuais = [r.get("text", "") for r in reviews if r.get("text")]
+                dossie_ia = gerar_dossie_concorrente_ia(lugar.get('name'), comentarios_individuais, detalhes.get('opening_hours', {}).get('weekday_text', []))
+                review_pos = next((r['text'] for r in reviews if r.get('rating', 0) >= 4), None)
+                review_neg = next((r['text'] for r in reviews if r.get('rating', 0) <= 2), None)
+                
+                concorrentes_formatados.append({
+                    "nome": lugar.get("name"), "endereco": detalhes.get('formatted_address'), "nota": lugar.get("rating"), "total_avaliacoes": lugar.get("user_ratings_total"), 
+                    "price_level": lugar.get("price_level"), "site": detalhes.get("website", ""), "horarios": detalhes.get('opening_hours', {}).get('weekday_text', []),
+                    "dossie_ia": dossie_ia, "review_positivo_exemplo": review_pos, "review_negativo_exemplo": review_neg
+                })
+                comentarios_total.extend(comentarios_individuais)
+
+            sentimentos_dict = analisar_sentimentos_por_topico_ia("\n".join(comentarios_total[:20]))
+            titulo, slogan, nivel, sugestoes_estrategicas, alerta = enriquecer_com_ia(sentimentos_dict)
+            
+            salvar_historico(nome_usuario, profissao, localizacao, titulo, slogan, nivel, alerta)
+
+            grafico_radar_b64 = gerar_grafico_radar_base64(sentimentos_dict)
+            grafico_concorrentes_b64 = gerar_grafico_concorrentes_base64(concorrentes_formatados)
+
+            dados_html = {
+                "base64_logo": base64_logo, "titulo": titulo, "slogan": slogan, "tipo_negocio": profissao, "nome_usuario": nome_usuario, 
+                "data_hoje": datetime.now().strftime("%d/%m/%Y %H:%M"), "sugestoes_estrategicas": sugestoes_estrategicas, "alerta_nicho": alerta,
+                "grafico_radar_b64": grafico_radar_b64, "grafico_concorrentes_b64": grafico_concorrentes_b64, "concorrentes": concorrentes_formatados
+            }
+            html_relatorio = gerar_html_relatorio(**dados_html)
+            
+            pdf_bytes = gerar_pdf(html_relatorio)
+            st.success("✅ Análise Premium concluída com sucesso!")
+            st.markdown("---"); st.subheader(f"📄 Relatório Estratégico para {profissao} em {localizacao}")
+            st.components.v1.html(html_relatorio, height=600, scrolling=True)
+
+            if pdf_bytes:
+                st.download_button("⬇️ Baixar Relatório Premium em PDF", pdf_bytes, f"relatorio_premium_{profissao.replace(' ','_')}_{datetime.now().strftime('%Y%m%d')}.pdf", "application/pdf")

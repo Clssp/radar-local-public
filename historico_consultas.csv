@@ -1,0 +1,10 @@
+nome_usuario,tipo_negocio_pesquisado,localizacao_pesquisada,data_consulta,nivel_concorrencia_ia,titulo_gerado_ia,slogan_gerado_ia,alerta_oportunidade_ia
+Carlos Machado,tecnico de TI,São Paulo,2025-06-07 13:29:18,Baixo,Análise de Excelência: Destacando a Central do Técnico e seus serviços,Transformando conhecimento em oportunidades!,
+Carlos Machado,Desenvolvedor,São Paulo,2025-06-07 13:30:17,Médio,Análise de Concorrência: Destacando o diferencial de qualidade e comprometimento,Qualidade e comprometimento: os pilares do sucesso!,"O nicho de cursos online e desenvolvimento de sites está em crescimento, sendo importante investir em diferenciais para se destacar da concorrência."
+Carlos Machado,Barbeiro,Mooca,2025-06-07 13:35:36,Baixo,Excelência em cortes e atendimento: A chave para o sucesso!,Onde a qualidade e o cuidado se encontram.,
+Carlos Machado,Barbeiro,Mooca,2025-06-07 13:40:56,Médio,Elevando a Experiência do Cliente,Surpreenda-se com a excelência em cada detalhe.,Oportunidade de melhoria: Tempo de Espera com nota 4.
+Carlos Machado,Cabeleireiro vegano,Santo André - SP,2025-06-07 13:50:20,Baixo,Oportunidades para se destacar no mercado local.,Transformando experiências em momentos inesquecíveis.,"Se houver um tópico com nota muito baixa (menor que 4), escreva um alerta sobre essa oportunidade. Senão, string vazia."
+Aline Silva,Maquiadora,Capão Redondo,2025-06-07 13:59:10,Médio,Análise de Sentimentos do Mercado Local,Transformando feedback em oportunidades de crescimento.,
+Aline Silva,Hortifrut,Capão Redondo,2025-06-07 14:00:12,Médio,Transformando desafios em oportunidades,"Juntos, podemos alcançar a excelência!",Oportunidade de melhoria no Tempo de Espera
+Maria Souza,Hortifrut,Capão Redondo,2025-06-07 14:03:34,Baixo,Melhorando a Experiência do Cliente,Encantando você a cada visita!,Oportunidade de melhoria no Tempo de Espera.
+Maria Urgueza,Maquiadora,Campinas,2025-06-07 14:06:53,Médio,Elevando a experiência do cliente,Qualidade e atendimento acima de tudo!,"Se houver um tópico com nota muito baixa (menor que 4), escreva um alerta sobre essa oportunidade. Senão, string vazia."
